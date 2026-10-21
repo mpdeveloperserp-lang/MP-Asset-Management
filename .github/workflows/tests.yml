@@ -1,0 +1,37 @@
+# Runs on every push and pull request. Uses only local emulators (project "demo-mp-assets");
+# it never touches the live Firebase project and needs no secrets.
+name: Tests — security rules & workflows
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: tests
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Install test tools
+        run: npm install --no-audit --no-fund
+      - name: Install Chromium for Playwright
+        run: npx playwright install --with-deps chromium
+      - name: Unit tests (depreciation, parsing, CSV safety)
+        run: npm run test:unit
+      - name: UI workflow tests (mock backend)
+        run: npm run test:mock
+      - name: Firestore security-rules tests (emulator)
+        run: npm run test:rules
+      - name: End-to-end app tests (emulator + real rules)
+        run: npm run test:emulator-e2e
