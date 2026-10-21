@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://www.gstatic.com https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self' https://*.googleapis.com https://*.firebaseio.com wss://*.firebaseio.com https://*.firebaseapp.com http://127.0.0.1:9099 http://127.0.0.1:8080 ws://127.0.0.1:8080; frame-src https://*.firebaseapp.com; object-src 'none'; base-uri 'self'; form-action 'self'">
+<meta name="referrer" content="strict-origin-when-cross-origin">
+<title>Asset Manager</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+
+<div id="loading" class="auth-wrap"><div style="color:#fff;opacity:.8">Loading…</div></div>
+
+<div id="auth" class="auth-wrap" hidden>
+  <div class="auth-card">
+    <div class="brand"><div class="brand-mark">AM</div><div><h1>Asset Manager</h1><small class="org-label"></small></div></div>
+    <div id="authBody"></div>
+  </div>
+</div>
+
+<div id="app" class="shell" hidden>
+  <aside class="side" id="side">
+    <div class="brand"><div class="brand-mark">AM</div><div><h1>Asset Manager</h1><small class="org-label"></small></div></div>
+    <nav class="nav" id="nav"></nav>
+  </aside>
+  <div class="scrim" id="scrim"></div>
+  <div class="main">
+    <header class="top">
+      <button class="btn sm menu-btn" id="menuBtn" aria-label="Menu">☰</button>
+      <h2 id="title"></h2>
+      <div class="who"><span class="nm" id="whoName"></span><span id="whoRole"></span><button class="btn sm" id="logoutBtn">Sign out</button></div>
+    </header>
+    <section class="view" id="view"></section>
+  </div>
+</div>
+
+<div id="modal" class="modal" hidden></div>
+<div id="toast" class="toast" hidden></div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

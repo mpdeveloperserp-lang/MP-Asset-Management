@@ -1,0 +1,305 @@
+rules_version = '2';
+
+// =====================================================================================
+// MP Developers — Asset Management · Firestore Security Rules (Phase 1)
+//
+// Principles
+//  • Every permission is enforced here; the browser UI only mirrors it.
+//  • Only ACTIVE profiles (users/{uid}.active == true) can read or write anything.
+//  • Nothing is ever hard-deleted (assets, assignments, audit, users, masters).
+//  • Every asset / settings / user change must be linked to an audit entry written in the
+//    SAME transaction by the SAME user (lastAuditId → audit/{id}); audit is append-only.
+//  • Assets carry an optimistic-concurrency counter `rev` (+1 on every update).
+//  • Serial numbers are unique via the index collection serials/{serialKey}.
+//  • Managers act only on assets whose current department ∈ managedDepartments
+//    or whose location ∈ managedLocations, and cannot touch financial or identity fields.
+//
+// Test before publishing:  cd tests && npm install && npm test   (Firebase emulator)
+// =====================================================================================
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ---------- identity ----------
+    function signedIn()   { return request.auth != null; }
+    function uPath()      { return /databases/$(database)/documents/users/$(request.auth.uid); }
+    function hasProfile() { return signedIn() && exists(uPath()); }
+    function me()         { return get(uPath()).data; }
+    function isActive()   { return hasProfile() && me().get('active', false) == true; }
+    function hasRole(r)   { return isActive() && me().get('role', '') == r; }
+    function isAdmin()    { return hasRole('admin'); }
+    function isManager()  { return hasRole('manager'); }
+    function isViewer()   { return hasRole('viewer'); }
+    function isEmployee() { return hasRole('employee'); }
+    function isStaff()    { return isAdmin() || isManager() || isViewer(); }
+    function isWriter()   { return isAdmin() || isManager(); }
+    function myEmpId()    { return me().get('empId', ''); }
+    // Explicit manager scope. Legacy profiles (before Phase 1) fall back to their single `department`.
+    function mgrDepts() {
+      return me().get('managedDepartments', me().get('department', '') == '' ? [] : [me().get('department', '')]);
+    }
+    function mgrLocs()    { return me().get('managedLocations', []); }
+
+    // ---------- settings ----------
+    function sPath()          { return /databases/$(database)/documents/settings/app; }
+    function bootstrapped()   { return exists(sPath()); }
+    function openingLocked()  { return bootstrapped() && get(sPath()).data.get('openingLocked', false) == true; }
+
+    // ---------- helpers ----------
+    function aPath(id)        { return /databases/$(database)/documents/assets/$(id); }
+    function serialPath(k)    { return /databases/$(database)/documents/serials/$(k); }
+    function auditPath(id)    { return /databases/$(database)/documents/audit/$(id); }
+    function serialKeyOf(s)   { return s.trim().lower().replace('/', '_'); }
+    function changedKeys()    { return request.resource.data.diff(resource.data).affectedKeys(); }
+
+    // The write must point (lastAuditId) at a NEW audit document, created in the same
+    // transaction by the same user, for this entity type and this record id.
+    function auditLinked(entity, id) {
+      let aid  = request.resource.data.get('lastAuditId', '');
+      let prev = resource == null ? '' : resource.data.get('lastAuditId', '');
+      return aid is string && aid != '' && aid != prev
+        && existsAfter(auditPath(aid))
+        && getAfter(auditPath(aid)).data.entity == entity
+        && getAfter(auditPath(aid)).data.by == request.auth.uid
+        && id in getAfter(auditPath(aid)).data.entityIds;
+    }
+
+    // =================================================================================
+    // USERS — profile, role and scope. Only admins manage users; nobody can delete.
+    // =================================================================================
+    function validUser(d) {
+      return d.role in ['admin', 'manager', 'viewer', 'employee']
+        && d.active is bool
+        && d.name is string && d.name.size() > 0
+        && d.get('managedDepartments', []) is list
+        && d.get('managedLocations', []) is list
+        && (d.role != 'employee' || (d.get('empId', '') is string && d.get('empId', '') != ''));
+    }
+    // One-time creation of the first admin, only while settings/app does not exist,
+    // and only together with settings/app in the same batch.
+    function bootstrapAdmin(uid) {
+      return signedIn() && request.auth.uid == uid && !bootstrapped() && existsAfter(sPath())
+        && request.resource.data.role == 'admin' && request.resource.data.active == true;
+    }
+    match /users/{uid} {
+      allow get:    if (signedIn() && request.auth.uid == uid) || isAdmin();
+      allow list:   if isAdmin();
+      allow create: if (isAdmin() && validUser(request.resource.data) && auditLinked('user', uid))
+                    || bootstrapAdmin(uid);
+      // An admin cannot demote or disable themselves (prevents locking everyone out).
+      allow update: if isAdmin() && validUser(request.resource.data) && auditLinked('user', uid)
+                    && (uid != request.auth.uid
+                        || (request.resource.data.role == 'admin' && request.resource.data.active == true));
+      allow delete: if false;
+    }
+
+    // =================================================================================
+    // SETTINGS — opening-balance lock, cut-off date, currency.
+    // =================================================================================
+    match /settings/{id} {
+      // Unprofiled accounts may only learn whether the app has been bootstrapped yet.
+      allow get:    if isActive() || (signedIn() && id == 'app' && !bootstrapped());
+      allow list:   if false;
+      allow create: if id == 'app' && signedIn() && !bootstrapped()
+                    && !exists(uPath()) && existsAfter(uPath())
+                    && getAfter(uPath()).data.role == 'admin';
+      allow update: if isAdmin() && auditLinked('settings', id)
+                    && !changedKeys().hasAny(['createdAt']);
+      allow delete: if false;
+    }
+
+    // =================================================================================
+    // MASTER DATA — admin-maintained, readable by active users (vendors/employees: staff).
+    // =================================================================================
+    match /types/{id} {
+      allow read:   if isActive();
+      allow create, update: if isAdmin()
+                    && request.resource.data.name is string && request.resource.data.name.size() > 0
+                    && request.resource.data.code is string && request.resource.data.code.matches('^[A-Z0-9]{2,5}$')
+                    && request.resource.data.subtypes is list;
+      allow delete: if false;
+    }
+    match /departments/{id} {
+      allow read:   if isActive();
+      allow create, update: if isAdmin() && request.resource.data.name is string && request.resource.data.name.size() > 0;
+      allow delete: if false;
+    }
+    match /locations/{id} {
+      allow read:   if isActive();
+      allow create, update: if isAdmin() && request.resource.data.name is string && request.resource.data.name.size() > 0;
+      allow delete: if false;
+    }
+    match /vendors/{id} {
+      allow read:   if isStaff();
+      allow create, update: if isAdmin() && request.resource.data.name is string && request.resource.data.name.size() > 0;
+      allow delete: if false;
+    }
+    match /employees/{id} {
+      allow read:   if isStaff() || (isEmployee() && id == myEmpId());
+      allow create, update: if isAdmin() && request.resource.data.empId == id
+                    && request.resource.data.name is string && request.resource.data.department is string;
+      allow delete: if false;
+    }
+    match /openingStock/{id} {
+      allow read:   if isStaff();
+      allow create, update: if isAdmin() && !openingLocked()
+                    && request.resource.data.qty is number && request.resource.data.qty >= 0
+                    && request.resource.data.value is number && request.resource.data.value >= 0;
+      allow delete: if false;
+    }
+
+    // =================================================================================
+    // ASSET-ID COUNTERS — may only move forward, so an ID can never be issued twice.
+    // =================================================================================
+    match /counters/{id} {
+      allow get:    if isWriter();
+      allow list:   if isAdmin();
+      allow create: if isWriter() && id.matches('^[A-Z0-9]{2,5}-[A-Z0-9]{2,5}$')
+                    && request.resource.data.keys().hasOnly(['next'])
+                    && request.resource.data.next is int && request.resource.data.next > 1
+                    && request.resource.data.next <= 5001;
+      allow update: if isWriter()
+                    && request.resource.data.keys().hasOnly(['next'])
+                    && request.resource.data.next is int
+                    && request.resource.data.next > resource.data.next
+                    && request.resource.data.next - resource.data.next <= 5000;
+      allow delete: if false;
+    }
+
+    // =================================================================================
+    // SERIAL-NUMBER INDEX — serials/{serialKey} → assetId. Create-only: a second asset
+    // with the same serial cannot be written, even by concurrent users or direct API calls.
+    // =================================================================================
+    match /serials/{key} {
+      allow get:    if isWriter();
+      allow list:   if isAdmin();
+      allow create: if isWriter()
+                    && request.resource.data.assetId is string
+                    && request.resource.data.by == request.auth.uid
+                    && existsAfter(aPath(request.resource.data.assetId))
+                    && getAfter(aPath(request.resource.data.assetId)).data.get('serialKey', '') == key;
+      allow update: if false;
+      // Released only by an admin, and only when the asset no longer uses it (serial corrected).
+      allow delete: if isAdmin()
+                    && getAfter(aPath(resource.data.assetId)).data.get('serialKey', '') != key;
+    }
+
+    // =================================================================================
+    // ASSETS
+    // =================================================================================
+    function inMgrScope(d) {
+      return (d.get('current', {}).get('department', '') != '' && d.get('current', {}).get('department', '') in mgrDepts())
+          || (d.get('location', '') != '' && d.get('location', '') in mgrLocs());
+    }
+    function validAsset(id, d) {
+      return d.assetId == id
+        && d.name is string && d.name.size() > 0 && d.name.size() <= 300
+        && d.typeId is string && d.subCode is string
+        && d.qty is int && d.qty >= 1
+        && (d.get('cost', null) == null || (d.cost is number && d.cost >= 0))
+        && d.status in ['In Stock', 'Assigned', 'Under Repair', 'Lost', 'Disposed']
+        && d.source in ['Purchase', 'Opening']
+        && d.rev is int
+        && d.get('serial', '') is string && d.get('serial', '').size() <= 200
+        && (d.status != 'Assigned'  || d.get('current', null) is map)
+        && (d.status != 'Disposed'  || d.get('disposal', null) is map);
+    }
+    function newSerialOk(d) {
+      return d.get('serialKey', '') == serialKeyOf(d.get('serial', ''))
+        && (d.get('serial', '') == '' || existsAfter(serialPath(d.serialKey)));
+    }
+    // Fields a manager may change. Cost, quantity, dates, life, salvage, source, type,
+    // serial and disposal are admin-only.
+    function managerKeys() {
+      return ['status', 'current', 'repair', 'lost', 'location', 'locationDetail', 'name', 'description', 'make',
+              'vendor', 'invoice', 'warrantyUntil', 'rev', 'lastAuditId', 'log', 'updatedAt', 'updatedBy', 'updatedByName'];
+    }
+    function managerUpdateOk() {
+      return inMgrScope(resource.data) && inMgrScope(request.resource.data)
+        && resource.data.status in ['In Stock', 'Assigned', 'Under Repair']
+        && request.resource.data.status in ['In Stock', 'Assigned', 'Under Repair', 'Lost']
+        && changedKeys().hasOnly(managerKeys());
+    }
+    function serialUnchanged() {
+      return request.resource.data.get('serial', '') == resource.data.get('serial', '')
+        && request.resource.data.get('serialKey', '') == resource.data.get('serialKey', '');
+    }
+
+    match /assets/{id} {
+      allow get, list: if isStaff()
+        || (isEmployee() && myEmpId() != '' && resource.data.current.employeeId == myEmpId());
+
+      allow create: if isWriter()
+        && id.matches('^[A-Z0-9]{2,5}-[A-Z0-9]{2,5}-[0-9]{4,}$')
+        && validAsset(id, request.resource.data)
+        && request.resource.data.rev == 0
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.status in ['In Stock', 'Assigned']
+        && newSerialOk(request.resource.data)
+        && (request.resource.data.source != 'Opening' || !openingLocked())
+        && (isAdmin() || inMgrScope(request.resource.data))
+        && auditLinked('asset', id);
+
+      allow update: if isWriter()
+        && validAsset(id, request.resource.data)
+        && request.resource.data.rev == resource.data.get('rev', 0) + 1
+        && !changedKeys().hasAny(['assetId', 'createdAt', 'createdBy', 'createdByName'])
+        && (serialUnchanged() || (isAdmin() && newSerialOk(request.resource.data)))
+        && (!changedKeys().hasAny(['source']) || (isAdmin() && !openingLocked()))
+        && auditLinked('asset', id)
+        && (isAdmin() || managerUpdateOk());
+
+      allow delete: if false;
+    }
+
+    // =================================================================================
+    // ASSIGNMENTS — one document per custody period. A period can only be opened when the
+    // asset points to it, and only closed (never edited afterwards) when the asset has
+    // moved on to another period or none.
+    // =================================================================================
+    match /assignments/{id} {
+      allow get, list: if isStaff()
+        || (isEmployee() && myEmpId() != '' && resource.data.employeeId == myEmpId());
+
+      allow create: if isWriter()
+        && request.resource.data.assetId is string
+        && request.resource.data.endDate == null
+        && request.resource.data.issuedBy == request.auth.uid
+        && getAfter(aPath(request.resource.data.assetId)).data.get('current', {}).get('assignmentId', '') == id
+        && (isAdmin()
+            || request.resource.data.department in mgrDepts()
+            || getAfter(aPath(request.resource.data.assetId)).data.get('location', '') in mgrLocs());
+
+      allow update: if isWriter()
+        && resource.data.endDate == null
+        && request.resource.data.endDate is string
+        && request.resource.data.closedBy == request.auth.uid
+        && changedKeys().hasOnly(['endDate', 'closeReason', 'conditionIn', 'closedBy', 'closedByName',
+                                  'returnedBy', 'receivedBy', 'returnNotes'])
+        && getAfter(aPath(resource.data.assetId)).data.get('current', {}).get('assignmentId', '') != id
+        && (isAdmin()
+            || resource.data.department in mgrDepts()
+            || get(aPath(resource.data.assetId)).data.get('location', '') in mgrLocs());
+
+      allow delete: if false;
+    }
+
+    // =================================================================================
+    // AUDIT — append-only. Written only by admins/managers, stamped with the server time
+    // and the writer's own uid. Readable by admins only.
+    // =================================================================================
+    match /audit/{id} {
+      allow get, list: if isAdmin();
+      allow create: if isWriter()
+        && request.resource.data.by == request.auth.uid
+        && request.resource.data.at == request.time
+        && request.resource.data.entity in ['asset', 'assignment', 'type', 'location', 'vendor', 'department',
+                                            'employee', 'user', 'openingStock', 'settings', 'integrity']
+        && request.resource.data.entityIds is list
+        && request.resource.data.entityIds.size() >= 1 && request.resource.data.entityIds.size() <= 50
+        && request.resource.data.action is string;
+      allow update, delete: if false;
+    }
+
+    // Anything not matched above is denied.
+  }
+}
