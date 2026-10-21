@@ -98,13 +98,15 @@ $('#view').addEventListener('click', e => {
   if (el.tagName === 'A' && el.dataset.act !== 'goto-report') e.preventDefault();
   ACT[el.dataset.act]?.(el.dataset, el);
 });
-$('#logoutBtn').onclick = () => signOut(auth);
+// Close live listeners BEFORE signing out, so they don't fire permission errors as the session ends.
+const logout = () => { unsubAll(); closeModal(); return signOut(auth); };
+$('#logoutBtn').onclick = () => logout();
 
 /* ---------- idle logout ---------- */
 let idleT = null, lastAct = 0, sessionMsg = '';
 function resetIdle(){
   const now = Date.now(); if (now - lastAct < 15000) return; lastAct = now;
-  clearTimeout(idleT); if (S.user) idleT = setTimeout(() => { sessionMsg = `Signed out after ${IDLE_LOGOUT_MIN} minutes of inactivity.`; signOut(auth); }, IDLE_LOGOUT_MIN * 60000);
+  clearTimeout(idleT); if (S.user) idleT = setTimeout(() => { sessionMsg = `Signed out after ${IDLE_LOGOUT_MIN} minutes of inactivity.`; logout(); }, IDLE_LOGOUT_MIN * 60000);
 }
 ['click','keydown','mousemove','touchstart','scroll'].forEach(ev => document.addEventListener(ev, resetIdle, {passive: true}));
 
@@ -133,7 +135,7 @@ function showLogin(msg = ''){
 function showMessage(html){
   screen('auth');
   $('#authBody').innerHTML = `${html}<div class="form-actions"><button class="btn" id="so">Sign out</button></div>`;
-  $('#so').onclick = () => signOut(auth);
+  $('#so').onclick = () => logout();
 }
 function showBootstrap(){
   screen('auth');
@@ -142,7 +144,7 @@ function showBootstrap(){
     <label class="check full"><input type="checkbox" name="seed" checked> Add starter types (Electronics, Furniture, Office Equipment, Vehicles), departments (Sales, CRM, Finance, HR, Engineering, Admin) and a Head Office location</label>
     <div class="full err" id="fe" hidden></div><button class="btn primary full" style="justify-content:center">Create admin & continue</button></form>
     <div class="form-actions"><button class="btn sm" id="so">Sign out</button></div>`;
-  $('#so').onclick = () => signOut(auth);
+  $('#so').onclick = () => logout();
   $('#bf').onsubmit = async e => {
     e.preventDefault(); const f = formObj(e.target), btn = e.target.querySelector('button'); btn.disabled = true;
     try {

@@ -193,14 +193,27 @@ class ConflictError extends Error {}
 /* =====================================================================
    DATA WRITES — every write is atomic and audited
    ===================================================================== */
+/* Retries an operation that failed because of a write conflict (contention), up to 5 attempts.
+   Only for idempotent reservations; a genuine refusal still surfaces after the last attempt. */
+const RETRYABLE = ['aborted', 'failed-precondition', 'unavailable', 'deadline-exceeded', 'permission-denied'];
+async function withRetry(fn, attempts = 5){
+  for (let i = 1; ; i++){
+    try { return await fn(); }
+    catch (e){
+      if (i >= attempts || !RETRYABLE.includes(e?.code)) throw e;
+      await new Promise(r => setTimeout(r, 150 * i + Math.random() * 250));
+    }
+  }
+}
 async function nextAssetIds(typeCode, subCode, n){
   const key = `${typeCode}-${subCode}`, ref = doc(db, 'counters', key);
-  const start = await runTransaction(db, async tx => {
+  // Two people saving at the same instant contend for the counter; retry with a short random pause.
+  const start = await withRetry(() => runTransaction(db, async tx => {
     const snap = await tx.get(ref);
     const cur = snap.exists() ? (snap.data().next || 1) : 1;
     tx.set(ref, {next: cur + n});
     return cur;
-  });
+  }));
   return Array.from({length: n}, (_, i) => `${key}-${String(start + i).padStart(4, '0')}`);
 }
 
@@ -321,4 +334,4 @@ async function auditedSet(ref, data, entity, action, before, opts = {}){
   await b.commit();
 }
 
-export { S, STATUSES, STATUS_LABEL, ROLES, $, $$, esc, curSym, money, num, fmtDate, fmtTs, byName, clean, role, isAdmin, isWriter, canManage, typeOf, typeLabel, subLabel, empById, activeDepts, activeLocs, activeVendors, vendorOf, vendorSelect, warrantyChip, locText, locSelect, chip, holderText, holderHtml, toast, errMsg, download, exceptions, applyFilters, filterBar, diff, addAudit, logEntry, nextAssetIds, createAssetRecords, updateAsset, closeAssignment, auditEntry, txRef, mgrDepts, mgrLocs, inScope, scopeError, ConflictError, CREATE_CHUNK, auditedSet };
+export { withRetry, S, STATUSES, STATUS_LABEL, ROLES, $, $$, esc, curSym, money, num, fmtDate, fmtTs, byName, clean, role, isAdmin, isWriter, canManage, typeOf, typeLabel, subLabel, empById, activeDepts, activeLocs, activeVendors, vendorOf, vendorSelect, warrantyChip, locText, locSelect, chip, holderText, holderHtml, toast, errMsg, download, exceptions, applyFilters, filterBar, diff, addAudit, logEntry, nextAssetIds, createAssetRecords, updateAsset, closeAssignment, auditEntry, txRef, mgrDepts, mgrLocs, inScope, scopeError, ConflictError, CREATE_CHUNK, auditedSet };
