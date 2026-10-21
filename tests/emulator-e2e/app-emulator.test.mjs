@@ -203,8 +203,11 @@ test('full workflow against emulator + real rules', async (t) => {
     await go('#reports'); await viewHas('Stock summary');
     await logout(); await login('priya@mp.test'); await page.waitForSelector('#app:not([hidden])');
     await viewHas('Assets with you');
+    // The page renders first, then the employee's own records arrive from the database — wait for them.
+    try { await viewHas('ELE-LAP-0001'); }
+    catch { throw new Error('Laptop assigned to E1023 never appeared for the employee. Problems so far: '
+      + JSON.stringify(problems) + ' | Screen: ' + (await page.textContent('#view')).slice(0, 600)); }
     const txt = await page.textContent('#view');
-    assert.ok(txt.includes('ELE-LAP-0001'), 'imported laptop assigned to E1023 is visible');
     assert.ok(!txt.includes('ELE-CAM-0005'), "another department's camera is not visible");
   });
 
