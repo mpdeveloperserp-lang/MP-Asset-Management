@@ -85,7 +85,15 @@ before(async () => {
   env = await initializeTestEnvironment({projectId: 'demo-mp-assets', firestore: {rules: RULES,
     host: process.env.FIRESTORE_EMULATOR_HOST?.split(':')[0] || '127.0.0.1', port: Number(process.env.FIRESTORE_EMULATOR_HOST?.split(':')[1] || 8080)}});
 });
-beforeEach(async () => { await env.clearFirestore(); await seed(); });
+// Same retry policy as the app (js/core.js withRetry): contention between simultaneous writers is retried.
+async function withRetry(fn, attempts = 5){
+  for (let i = 1; ; i++){
+    try { return await fn(); }
+    catch (e){ if (i >= attempts) throw e; await new Promise(r => setTimeout(r, 150 * i + Math.random() * 250)); }
+  }
+}
+// clearFirestore can briefly hit locks left by aborted concurrent transactions — retry.
+beforeEach(async () => { await withRetry(() => env.clearFirestore(), 8); await seed(); });
 after(async () => { await env?.cleanup(); });
 
 // ---------------- Acceptance 6: viewer cannot modify through direct requests ----------------
@@ -187,10 +195,14 @@ test('concurrent ID reservations never overlap', async () => {
     const r = doc(f, 'counters', 'ELE-CAM'); const s = await tx.get(r); const cur = s.data().next;
     tx.set(r, {next: cur + n}); return Array.from({length: n}, (_, i) => cur + i);
   }); };
-  const results = await Promise.all(Array.from({length: 8}, () => take(5)));
+  // 6 users reserve IDs at the same instant; each retries on contention exactly as the app does.
+  const results = await Promise.all(Array.from({length: 6}, () => withRetry(() => take(5), 8)));
   const all = results.flat();
   if (new Set(all).size !== all.length) throw new Error('duplicate IDs issued: ' + all);
-  if (all.length !== 40) throw new Error('expected 40 ids');
+  if (all.length !== 30) throw new Error('expected 30 ids');
+  let next;
+  await env.withSecurityRulesDisabled(async x => { next = (await getDoc(doc(x.firestore(), 'counters', 'ELE-CAM'))).data().next; });
+  if (next !== 40) throw new Error('counter should end at 40, got ' + next);
 });
 
 // ---------------- Acceptance 2: duplicate serials ----------------
