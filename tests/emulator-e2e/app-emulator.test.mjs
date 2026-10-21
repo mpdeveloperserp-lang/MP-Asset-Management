@@ -35,7 +35,8 @@ async function login(email){
 }
 async function logout(){ await page.click('#logoutBtn'); await page.waitForSelector('#lf'); }
 const go = async hash => { await page.evaluate(h => { location.hash = h; }, hash); await page.waitForTimeout(150); };
-const viewHas = (txt, timeout = 15000) => page.waitForFunction(t => document.querySelector('#view')?.innerText.includes(t), txt, {timeout});
+// textContent, not innerText: innerText applies CSS text-transform (e.g. KPI labels shown in capitals).
+const viewHas = (txt, timeout = 15000) => page.waitForFunction(t => document.querySelector('#view')?.textContent.includes(t), txt, {timeout});
 async function noErrorToast(step){
   const err = await page.$('#toast.err:not([hidden])');
   if (err) problems.push(`${step}: ${await err.innerText()}`);
@@ -202,7 +203,7 @@ test('full workflow against emulator + real rules', async (t) => {
     await go('#reports'); await viewHas('Stock summary');
     await logout(); await login('priya@mp.test'); await page.waitForSelector('#app:not([hidden])');
     await viewHas('Assets with you');
-    const txt = await page.innerText('#view');
+    const txt = await page.textContent('#view');
     assert.ok(txt.includes('ELE-LAP-0001'), 'imported laptop assigned to E1023 is visible');
     assert.ok(!txt.includes('ELE-CAM-0005'), "another department's camera is not visible");
   });
