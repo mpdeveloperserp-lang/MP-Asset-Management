@@ -231,6 +231,15 @@ test('closing the current period without moving the asset off it is denied; clos
   await assertFails(deleteDoc(doc(db('admin'), 'assignments', 'old')));
 });
 
+test('orphan period whose asset no longer exists: admin can close it, manager cannot', async () => {
+  await env.withSecurityRulesDisabled(c => setDoc(doc(c.firestore(), 'assignments', 'ghost'),
+    {assetId: 'ELE-CCTV-0001', department: 'Sales', employeeId: '', startDate: '2026-08-01', endDate: null, issuedBy: 'admin'}));
+  const close = uid => updateDoc(doc(db(uid), 'assignments', 'ghost'), {endDate: '2026-10-21', closeReason: 'Integrity fix — orphan period', closedBy: uid, closedByName: uid});
+  await assertFails(close('mgr'));
+  await assertSucceeds(close('admin'));
+  await assertFails(updateDoc(doc(db('admin'), 'assignments', 'ghost'), {endDate: '2026-10-22', closedBy: 'admin'}), 'closed periods stay immutable');
+});
+
 // ---------------- Acceptance 11: disposal keeps history ----------------
 test('assets are never deleted; disposal is admin-only', async () => {
   await assertFails(deleteDoc(doc(db('admin'), 'assets', 'ELE-CAM-0003')));
