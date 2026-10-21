@@ -183,10 +183,10 @@ test('counters only move forward', async () => {
   await assertFails(deleteDoc(doc(db('admin'), 'counters', 'ELE-CAM')));
 });
 test('concurrent ID reservations never overlap', async () => {
-  const take = n => runTransaction(db('admin'), async tx => {
-    const r = doc(db('admin'), 'counters', 'ELE-CAM'); const s = await tx.get(r); const cur = s.data().next;
+  const take = n => { const f = db('admin'); return runTransaction(f, async tx => {
+    const r = doc(f, 'counters', 'ELE-CAM'); const s = await tx.get(r); const cur = s.data().next;
     tx.set(r, {next: cur + n}); return Array.from({length: n}, (_, i) => cur + i);
-  });
+  }); };
   const results = await Promise.all(Array.from({length: 8}, () => take(5)));
   const all = results.flat();
   if (new Set(all).size !== all.length) throw new Error('duplicate IDs issued: ' + all);
