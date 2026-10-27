@@ -3,7 +3,7 @@
 // purchase date, salvage floor, stop at disposal). Replace / extend with Finance-approved cases (Q3).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { depr, monthsBetween, fyStartYear, fyLabel, parseDate, parseCSVRows, toCSV, serialKeyOf, serialProblem, valueOf } from '../../js/calc.js';
+import { depr, monthsBetween, fyStartYear, fyLabel, parseDate, parseCSVRows, toCSV, serialKeyOf, serialProblem, valueOf, excelSerialToIso } from '../../js/calc.js';
 
 const close = (a, b, msg) => assert.ok(Math.abs(a - b) < 0.01, `${msg}: ${a} ≠ ${b}`);
 const laptop = {cost: 68500, qty: 1, life: 3, salvage: 0, purchaseDate: '2024-06-12', status: 'Assigned'};
@@ -59,4 +59,17 @@ test('serial keys: case/space-insensitive, slash-safe, reserved names rejected',
   assert.equal(serialKeyOf('HKV-1'), serialKeyOf('hkv-1 '));
   assert.ok(serialProblem('..')); assert.ok(serialProblem('__x__')); assert.ok(serialProblem('x'.repeat(201)));
   assert.equal(serialProblem('K12345'), '');
+});
+
+test('dates: month-name forms; DD-MM never read as MM-DD', () => {
+  assert.equal(parseDate('05-Oct-2026'), '2026-10-05'); assert.equal(parseDate('5 October 2026'), '2026-10-05');
+  assert.equal(parseDate('05/10/2026'), '2026-10-05', 'day first, whatever the PC region');
+  assert.equal(parseDate('10/25/2026'), null, 'US month-first text is refused, not misread');
+  assert.equal(parseDate('05-Foo-2026'), null);
+});
+test('Excel date serials (a date cell that lost its format)', () => {
+  assert.equal(excelSerialToIso('45000'), '2023-03-15'); assert.equal(excelSerialToIso(46310), '2026-10-15');
+  assert.equal(excelSerialToIso('46310.75'), '2026-10-15', 'time of day ignored');
+  assert.equal(excelSerialToIso('123'), null); assert.equal(excelSerialToIso('27395'), '1975-01-01', 'converted; the import rejects it as out of range');
+  assert.equal(excelSerialToIso('K1234'), null); assert.equal(excelSerialToIso(''), null);
 });
