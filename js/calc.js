@@ -20,12 +20,27 @@ function isoOf(y, mo, d){
   return dt.toISOString().slice(0,10);
 }
 
+const MONTHS = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'];
 function parseDate(s){
   s = String(s || '').trim(); if (!s) return '';
   let m;
-  if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/))) return isoOf(m[1], m[2], m[3]);
-  if ((m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/))) return isoOf(m[3], m[2], m[1]); // DD-MM-YYYY
+  if ((m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/))) return isoOf(m[1], m[2], m[3]);                 // YYYY-MM-DD
+  if ((m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/))) return isoOf(m[3], m[2], m[1]);       // DD-MM-YYYY (never MM-DD)
+  if ((m = s.match(/^(\d{1,2})[\s\-\/.]([A-Za-z]{3,9})[\s\-\/.,]+(\d{4})$/))){                          // 05-Oct-2026, 5 October 2026
+    const mo = MONTHS.indexOf(m[2].slice(0, 3).toLowerCase());
+    return mo < 0 ? null : isoOf(m[3], mo + 1, m[1]);
+  }
   return null;
+}
+/* Date range accepted by the template and the import. */
+const DATE_MIN = '1980-01-01', DATE_MAX = '2099-12-31';
+/* Excel stores dates as day serials (Windows date system). A date cell that lost its date format arrives
+   as e.g. "46310" — convert it. Five-digit serials only (1927–2173); the import then applies DATE_MIN/DATE_MAX. */
+function excelSerialToIso(v){
+  const s = String(v ?? '').trim();
+  if (!/^\d{5}(\.\d+)?$/.test(s)) return null;
+  const n = Math.floor(Number(s));
+  return new Date(Date.UTC(1899, 11, 30) + n * 864e5).toISOString().slice(0, 10);   // range is checked by the import
 }
 
 function parseCSV(text){
@@ -91,4 +106,4 @@ function serialProblem(s){
   return '';
 }
 
-export { isNum, today, addDays, daysBetween, qtyOf, valueOf, sum, isoOf, parseDate, parseCSV, parseCSVRows, g, toCSV, monthsBetween, depr, fyStartYear, fyLabel, serialKeyOf, serialProblem };
+export { DATE_MIN, DATE_MAX, excelSerialToIso, isNum, today, addDays, daysBetween, qtyOf, valueOf, sum, isoOf, parseDate, parseCSV, parseCSVRows, g, toCSV, monthsBetween, depr, fyStartYear, fyLabel, serialKeyOf, serialProblem };

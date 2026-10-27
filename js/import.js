@@ -1,5 +1,5 @@
 import { ORG_NAME } from './config.js';
-import { g, isNum, parseCSVRows, parseDate, serialKeyOf, serialProblem, sum, toCSV, today } from './calc.js';
+import { DATE_MAX, DATE_MIN, excelSerialToIso, g, isNum, parseCSVRows, parseDate, serialKeyOf, serialProblem, sum, toCSV, today } from './calc.js';
 import { $, activeDepts, activeLocs, activeVendors, byName, chip, createAssetRecords, download, errMsg, esc, fmtDate, isAdmin, num, S, scopeError, toast } from './core.js';
 import { busy, closeModal, openModal } from './ui.js';
 
@@ -34,7 +34,7 @@ const FIELDS = [
   {key:'make', label:'Make / model', w:20, help:'Optional free text.', ex:'Hikvision DS-2CE76D0T'},
   {key:'vendor', label:'Vendor', list:'vendor', w:24, help:'Pick from the list (Masters → Vendors).', ex:'SecureTech Systems'},
   {key:'invoice', label:'Invoice reference', kind:'text', w:16, help:'Optional.', ex:'INV-4410'},
-  {key:'purchaseDate', label:'Purchase date', kind:'date', w:14, help:'A date (dd-mm-yyyy), not in the future. Blank → flagged “Data Incomplete”.', ex:'10-10-2026'},
+  {key:'purchaseDate', label:'Purchase date', kind:'date', w:14, help:'A date, shown as DD-MM-YYYY. Not in the future. Blank → flagged “Data Incomplete”.', ex:'10-10-2026'},
   {key:'cost', label:'Unit cost', kind:'num', w:12, help:'Number only — no ₹ symbol or commas. Blank → flagged “Data Incomplete”.', ex:'3200'},
   {key:'life', label:'Useful life (years)', kind:'num', w:12, help:'Blank → default life of the subtype.', ex:'5'},
   {key:'salvage', label:'Salvage value', kind:'num', w:12, help:'Total for the record. Blank → 0.', ex:'0'},
@@ -115,7 +115,11 @@ async function downloadTemplate(){
     head(cell, f.label + (f.req ? ' *' : ''), f.req ? GOLD : NAVY, f.req ? NAVY : WHITE);
     cell.note = f.help + (f.ex ? `\nExample: ${f.ex}` : '');
     const col = ws.getColumn(n); col.width = f.w;
-    if (f.kind === 'date') col.numFmt = 'dd-mm-yyyy';
+    if (f.kind === 'date'){
+      col.numFmt = 'dd-mm-yyyy';
+      // Format every entry cell too (some spreadsheet apps ignore column-level formats).
+      for (let r = 2; r <= last; r++) ws.getCell(r, n).numFmt = 'dd-mm-yyyy';
+    }
     else if (f.kind === 'text' || f.list) col.numFmt = '@';
     const range = `${L}2:${L}${last}`;
     const base = {allowBlank: true, showErrorMessage: true, errorStyle: 'stop', errorTitle: f.label, showInputMessage: true, promptTitle: f.label, prompt: f.help.slice(0, 250)};
@@ -125,7 +129,11 @@ async function downloadTemplate(){
     } else if (f.list && ref[f.list]){
       ws.dataValidations.add(range, {...base, type: 'list', formulae: [ref[f.list]], error: `Pick a value from the list — it must match Masters exactly.`});
     } else if (f.kind === 'date'){
-      ws.dataValidations.add(range, {...base, type: 'date', operator: 'greaterThan', formulae: [new Date(Date.UTC(1990, 0, 1))], error: 'Enter a valid date (dd-mm-yyyy).'});
+      // Date validation: Excel rejects text and out-of-range dates; Google Sheets shows a calendar picker on these cells.
+      ws.dataValidations.add(range, {...base, type: 'date', operator: 'between',
+        formulae: [new Date(DATE_MIN + 'T00:00:00Z'), new Date(DATE_MAX + 'T00:00:00Z')],
+        prompt: (f.help + ' Ctrl+; enters today.').slice(0, 250),
+        error: 'Enter a real date between 01-01-1980 and 31-12-2099 — type it as DD-MM-YYYY (e.g. 05-10-2026) or YYYY-MM-DD, or press Ctrl+; for today.'});
     } else if (f.kind === 'num'){
       ws.dataValidations.add(range, {...base, type: 'decimal', operator: 'greaterThanOrEqual', formulae: [0], error: 'Enter a number ≥ 0 (no ₹ or commas).'});
     } else if (f.kind === 'int'){
@@ -147,6 +155,7 @@ async function downloadTemplate(){
     '4. Upload the saved .xlsx in Assets → Bulk import. Every row is checked before anything is saved; rows with errors are listed and skipped.',
     '5. Columns marked * (gold) are mandatory. Blank cost or purchase date is allowed but flags the asset “Data Incomplete”.'
   ];
+  steps.push('6. Dates (Purchase date, Warranty valid until, Assignment date, Expected return date): type 05-10-2026 or 2026-10-05, or press Ctrl+; for today. In Google Sheets, double-click the cell to pick from a calendar. Wrong or impossible dates are refused as you type; leave optional dates blank.');
   steps.forEach((s, i) => { const cell = info.getCell(4 + i, 1); cell.value = s; info.mergeCells(4 + i, 1, 4 + i, 4); cell.alignment = {wrapText: true, vertical: 'top'}; info.getRow(4 + i).height = 30; });
   let r = 4 + steps.length + 1;
   ['Column', 'Required', 'What to enter', 'Example'].forEach((h, i) => head(info.getCell(r, i + 1), h));
@@ -233,7 +242,9 @@ function validateImport(records){
     const qtyRaw = g(r, 'qty'), qty = qtyRaw === '' ? 1 : Number(qtyRaw);
     if (!Number.isInteger(qty) || qty < 1) errs.push('Quantity must be a whole number ≥ 1');
     else if (tracking === 'Individual' && qty !== 1) errs.push('Tracking is Individual, so Quantity must be 1 — add one row per unit, or set Tracking to Lot');
-    const pd = parseDate(g(r, 'purchaseDate')); if (pd === null) errs.push('Purchase date is not a valid date'); else if (pd > t0) errs.push('Purchase date is in the future');
+    const badDate = label => `${label} is not a valid date — use DD-MM-YYYY (e.g. 05-10-2026)`;
+    const outOfRange = d => d && (d < DATE_MIN || d > DATE_MAX);
+    const pd = parseDate(g(r, 'purchaseDate')); if (pd === null) errs.push(badDate('Purchase date')); else if (outOfRange(pd)) errs.push('Purchase date is outside 01-01-1980 – 31-12-2099'); else if (pd > t0) errs.push('Purchase date is in the future');
     const costRaw = g(r, 'cost'); if (costRaw && (!isNum(costRaw) || Number(costRaw) < 0)) errs.push('Unit cost must be a number ≥ 0 (no ₹ or commas)');
     const salv = g(r, 'salvage'); if (salv && (!isNum(salv) || Number(salv) < 0)) errs.push('Salvage value must be a number ≥ 0');
     const lifeRaw = g(r, 'life'); if (lifeRaw && (!isNum(lifeRaw) || Number(lifeRaw) < 0)) errs.push('Useful life must be a number ≥ 0');
@@ -247,7 +258,7 @@ function validateImport(records){
     if (serial){ if (existing.has(sk)) errs.push(`Serial number ${serial} already exists`); else if (seen.has(sk)) errs.push(`Serial number ${serial} is repeated in the file`); seen.add(sk); }
     const vend = g(r, 'vendor') ? chk(g(r, 'vendor'), M.vendor, 'Vendor') || '' : '';
     const loc = g(r, 'location') ? chk(g(r, 'location'), M.location, 'Location') || '' : '';
-    const wu = parseDate(g(r, 'warrantyUntil')); if (wu === null) errs.push('Warranty valid until is not a valid date'); else if (wu && pd && wu < pd) errs.push('Warranty end is before the purchase date');
+    const wu = parseDate(g(r, 'warrantyUntil')); if (wu === null) errs.push(badDate('Warranty valid until')); else if (outOfRange(wu)) errs.push('Warranty valid until is outside 01-01-1980 – 31-12-2099'); else if (wu && pd && wu < pd) errs.push('Warranty end is before the purchase date');
     let unknown = false; const hu = g(r, 'holderUnknown');
     if (hu){ const n = /^y$/i.test(hu) ? 'Yes' : /^n$/i.test(hu) ? 'No' : chk(hu, YESNO, 'In use, holder unknown'); unknown = n === 'Yes'; }
     let dept = g(r, 'department') ? chk(g(r, 'department'), M.department, 'Department') || '' : '';
@@ -260,8 +271,8 @@ function validateImport(records){
       else dept = emp.department;
     }
     if (unknown && (g(r, 'department') || empId)) errs.push('“In use, holder unknown” is Yes, so leave Department and Employee ID blank');
-    const ad = parseDate(g(r, 'assignedDate')); if (ad === null) errs.push('Assignment date is not a valid date');
-    const er = parseDate(g(r, 'expectedReturn')); if (er === null) errs.push('Expected return date is not a valid date');
+    const ad = parseDate(g(r, 'assignedDate')); if (ad === null) errs.push(badDate('Assignment date')); else if (outOfRange(ad)) errs.push('Assignment date is outside 01-01-1980 – 31-12-2099');
+    const er = parseDate(g(r, 'expectedReturn')); if (er === null) errs.push(badDate('Expected return date')); else if (outOfRange(er)) errs.push('Expected return date is outside 01-01-1980 – 31-12-2099');
     const assignDate = ad || pd || t0;
     if (!dept && (ad || er)) errs.push('Assignment dates given without a Department / Employee ID');
     if (dept && er && er < assignDate) errs.push('Expected return date is before the assignment date');
@@ -309,7 +320,11 @@ function importDialog(){
       }
       if (!parsed.data.length) return (prev.innerHTML = '<div class="err">The file has no data rows.</div>');
       if (parsed.data.length > 3000) return (prev.innerHTML = '<div class="err">Please import at most 3,000 rows per file.</div>');
-      const records = parsed.data.map(d => { const r = {}; hm.map.forEach((k, i) => { if (k) r[k.toLowerCase()] = d.vals[i] ?? ''; }); return {row: d.rn, r}; });
+      const dateKeys = new Set(FIELDS.filter(f => f.kind === 'date').map(f => f.key));
+      const records = parsed.data.map(d => { const r = {}; hm.map.forEach((k, i) => { if (!k) return;
+        let v = d.vals[i] ?? '';
+        if (dateKeys.has(k)) v = excelSerialToIso(v) || v;   // a date cell that lost its format arrives as a serial number
+        r[k.toLowerCase()] = v; }); return {row: d.rn, r}; });
       const res = validateImport(records), ok = res.filter(x => x.item), bad = res.filter(x => !x.item);
       prev.innerHTML = `
         <div class="toolbar"><span class="sub">${esc(file.name)}</span><span class="chip green">${ok.length} ready</span><span class="chip red">${bad.length} with errors</span>
