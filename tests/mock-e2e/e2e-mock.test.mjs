@@ -273,3 +273,57 @@ test('admin full JSON export contains every collection and is audited', async ()
   assert.ok(Object.values((await p.db()).audit).some(a => a.action === 'Full data export'));
   await close(p);
 });
+
+test('date columns: calendar-ready validation, DD-MM-YYYY cells, and every date form imports correctly', async () => {
+  const p = await open();
+  await p.click('[data-act=import]');
+  const [dl] = await Promise.all([p.waitForEvent('download'), p.click('#tpl')]);
+  const file = path.join(TMP, 'dates.xlsx'); await dl.saveAs(file);
+  const wb = new ExcelJS.Workbook(); await wb.xlsx.readFile(file);
+  const ws = wb.getWorksheet('Assets');
+  const col = {}; ws.getRow(1).eachCell((c, i) => { col[String(c.value).replace(' *', '')] = i; });
+  const dateCols = ['Purchase date', 'Warranty valid until', 'Assignment date', 'Expected return date'];
+  // 1. Template: all 4 date columns validated as dates 1980–2099, formatted DD-MM-YYYY on every entry row.
+  for (const name of dateCols){
+    const L = String.fromCharCode(64 + col[name]);
+    for (const r of [2, 500, 1001]){
+      const v = ws.getCell(`${L}${r}`).dataValidation;
+      assert.equal(v.type, 'date', `${name} row ${r} validation`); assert.equal(v.operator, 'between');
+      assert.equal(new Date(v.formulae[0]).toISOString().slice(0, 10), '1980-01-01');
+      assert.equal(new Date(v.formulae[1]).toISOString().slice(0, 10), '2099-12-31');
+      assert.equal(ws.getCell(`${L}${r}`).numFmt, 'dd-mm-yyyy', `${name} row ${r} format`);
+    }
+  }
+  assert.equal(ws.getCell(`${String.fromCharCode(64 + col['Asset name'])}2`).dataValidation?.type, undefined, 'non-date columns untouched');
+  // 2. Fill rows the way different users / regions / apps would produce them.
+  const base = n => ({Type: 'Electronics', Subtype: 'CCTV Camera', 'Asset name': n, Tracking: 'Individual', Quantity: 1});
+  const rows = [
+    ['picked date (real Excel date)', {'Purchase date': new Date(Date.UTC(2026, 9, 1)), 'Warranty valid until': new Date(Date.UTC(2027, 9, 1))}, '2026-10-01'],
+    ['serial number (format lost)', {'Purchase date': 46300}, '2026-10-05', true],
+    ['text DD-MM-YYYY', {'Purchase date': '05-10-2026'}, '2026-10-05'],
+    ['text YYYY-MM-DD', {'Purchase date': '2026-10-05'}, '2026-10-05'],
+    ['text 05-Oct-2026', {'Purchase date': '05-Oct-2026'}, '2026-10-05'],
+    ['blank optional dates', {}, ''],
+    ['impossible date', {'Purchase date': '31-02-2026'}, null],
+    ['too old', {'Purchase date': new Date(Date.UTC(1975, 0, 1))}, null],
+    ['US month-first text', {'Purchase date': '10/25/2026'}, null]
+  ];
+  rows.forEach(([name, dates, , general], i) => {
+    const vals = {...base(name), ...dates};
+    for (const [k, v] of Object.entries(vals)){ const c = ws.getCell(i + 2, col[k]); c.value = v; if (general && k === 'Purchase date') c.numFmt = 'General'; }
+  });
+  await wb.xlsx.writeFile(file);
+  await p.setInputFiles('#file', file); await p.waitForSelector('#doImp');
+  const chips = await p.$$eval('#prev .chip', c => c.map(x => x.innerText));
+  assert.deepEqual(chips.slice(0, 2), ['6 ready', '3 with errors']);
+  const errText = await p.textContent('#prev table');
+  assert.match(errText, /Purchase date is not a valid date — use DD-MM-YYYY/);
+  assert.match(errText, /outside 01-01-1980 – 31-12-2099/);
+  await p.click('#doImp');
+  await p.waitForFunction(() => Object.keys(window.__DB.assets).length === 6);
+  const byName = Object.fromEntries(Object.values((await p.db()).assets).map(a => [a.name, a]));
+  for (const [name, , want] of rows.filter(r => r[2] !== null)) assert.equal(byName[name].purchaseDate, want, name);
+  assert.equal(byName['picked date (real Excel date)'].warrantyUntil, '2027-10-01');
+  assert.equal(byName['blank optional dates'].warrantyUntil, '', 'blank stays blank');
+  await close(p);
+});
